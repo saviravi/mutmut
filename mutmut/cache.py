@@ -49,6 +49,7 @@ class Mutant(db.Entity):
     index = Required(int)
     tested_against_hash = Optional(str, autostrip=False)
     status = Required(str, autostrip=False)  # really an enum of mutant_statuses
+    failed_tests = Optional(str, autostrip=False) # names of tests that failed because of this mutant 
 
 
 def init_db(f):
@@ -180,10 +181,22 @@ def print_result_cache(show_diffs=False, dict_synonyms=None, only_this_file=None
                 else:
                     print(ranges([x.id for x in mutants]))
 
+    def print_failed_tests(mutant_query):
+        mutant_list = sorted(mutant_query, key=lambda x: x.line.sourcefile.filename)
+        
+        for filename, mutants in groupby(mutant_list, key=lambda x: x.line.sourcefile.filename):
+            if only_this_file and filename != only_this_file:
+                continue
+            mutants = list(mutants)
+            print(f"Tests that caught mutations in {filename}:")
+            for x in mutants:
+                print(x.id, ": ", x.failed_tests.split(" "))
+
     print_stuff('Timed out ⏰', (x for x in Mutant.select() if x.status == BAD_TIMEOUT))
     print_stuff('Suspicious 🤔', (x for x in Mutant.select() if x.status == OK_SUSPICIOUS))
     print_stuff('Survived 🙁', (x for x in Mutant.select() if x.status == BAD_SURVIVED))
     print_stuff('Untested/skipped', (x for x in Mutant.select() if x.status == UNTESTED or x.status == SKIPPED))
+    print_failed_tests((x for x in Mutant.select() if x.status == OK_KILLED or x.status == OK_SUSPICIOUS))
 
 
 @init_db
@@ -417,7 +430,7 @@ def register_mutants(mutations_by_file):
             line = Line.get(sourcefile=sourcefile, line=mutation_id.line, line_number=mutation_id.line_number)
             if line is None:
                 raise ValueError("Obtained null line for mutation_id: {}".format(mutation_id))
-            get_or_create(Mutant, line=line, index=mutation_id.index, defaults=dict(status=UNTESTED))
+            get_or_create(Mutant, line=line, index=mutation_id.index, failed_tests="", defaults=dict(status=UNTESTED))
 
         sourcefile.hash = hash
 
@@ -430,6 +443,16 @@ def update_mutant_status(file_to_mutate, mutation_id, status, tests_hash):
     mutant = Mutant.get(line=line, index=mutation_id.index)
     mutant.status = status
     mutant.tested_against_hash = tests_hash
+
+
+@init_db
+@db_session
+def update_mutant_failed_tests(file_to_mutate, mutation_id, tests_hash, failed_tests):
+    sourcefile = SourceFile.get(filename=file_to_mutate)
+    line = Line.get(sourcefile=sourcefile, line=mutation_id.line, line_number=mutation_id.line_number)
+    mutant = Mutant.get(line=line, index=mutation_id.index)
+    mutant.tested_against_hash = tests_hash
+    mutant.failed_tests = failed_tests
 
 
 @init_db
@@ -449,7 +472,7 @@ def get_cached_mutation_statuses(filename, mutations, hash_of_tests):
         assert line
         mutant = Mutant.get(line=line, index=mutation_id.index)
         if mutant is None:
-            mutant = get_or_create(Mutant, line=line, index=mutation_id.index, defaults=dict(status=UNTESTED))
+            mutant = get_or_create(Mutant, line=line, index=mutation_id.index, failed_tests="", defaults=dict(status=UNTESTED))
 
         result[mutation_id] = mutant.status
         if mutant.status == OK_KILLED:
@@ -476,7 +499,7 @@ def cached_mutation_status(filename, mutation_id, hash_of_tests):
     assert line
     mutant = Mutant.get(line=line, index=mutation_id.index)
     if mutant is None:
-        mutant = get_or_create(Mutant, line=line, index=mutation_id.index, defaults=dict(status=UNTESTED))
+        mutant = get_or_create(Mutant, line=line, index=mutation_id.index, failed_tests="", defaults=dict(status=UNTESTED))
 
     if mutant.status == OK_KILLED:
         # We assume that if a mutant was killed, a change to the test

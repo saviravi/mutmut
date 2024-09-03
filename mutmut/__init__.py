@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 import toml
+import random
 from configparser import ConfigParser
 from copy import copy as copy_obj
 from dataclasses import dataclass, field
@@ -568,7 +569,7 @@ def mutate(context: Context) -> Tuple[str, int]:
     :return: tuple of mutated source code and number of mutations performed
     """
     try:
-        result = parse(context.source, error_recovery=False)
+        result = parse(context.source, error_recovery=False) # result is the root node of the file
     except Exception:
         print('Failed to parse {}. Internal error from parso follows.'.format(context.filename))
         print('----------------------------------')
@@ -746,7 +747,8 @@ def check_mutants(mutants_queue, results_queue, cycle_process_after):
             if command == 'end':
                 break
 
-            status = run_mutation(context, feedback)
+            status, pytest_output = run_mutation(context, feedback)
+            results_queue.put(('failed_tests', pytest_output, context.filename, context.mutation_id))
 
             results_queue.put(('status', status, context.filename, context.mutation_id))
             count += 1
@@ -759,7 +761,7 @@ def check_mutants(mutants_queue, results_queue, cycle_process_after):
             results_queue.put(('end', None, None, None))
 
 
-def run_mutation(context: Context, callback) -> str:
+def run_mutation(context: Context, callback) -> tuple[str, str]:
     """
     :return: (computed or cached) status of the tested mutant, one of mutant_statuses
     """
@@ -767,7 +769,7 @@ def run_mutation(context: Context, callback) -> str:
     cached_status = cached_mutation_status(context.filename, context.mutation_id, context.config.hash_of_tests)
 
     if cached_status != UNTESTED and context.config.total != 1:
-        return cached_status
+        return cached_status, ""
 
     config = context.config
     if hasattr(mutmut_config, 'pre_mutation'):
@@ -775,9 +777,9 @@ def run_mutation(context: Context, callback) -> str:
         try:
             mutmut_config.pre_mutation(context=context)
         except SkipException:
-            return SKIPPED
+            return SKIPPED, ""
         if context.skip:
-            return SKIPPED
+            return SKIPPED, ""
 
     if config.pre_mutation:
         result = subprocess.check_output(config.pre_mutation, shell=True).decode().strip()
@@ -791,26 +793,27 @@ def run_mutation(context: Context, callback) -> str:
         )
         start = time()
         try:
-            survived = tests_pass(config=config, callback=callback)
+            survived, pytest_output = tests_pass(config=config, callback=callback)
             if survived and config.test_command != config._default_test_command and config.rerun_all:
                 # rerun the whole test suite to be sure the mutant can not be killed by other tests
                 config.test_command = config._default_test_command
-                survived = tests_pass(config=config, callback=callback)
+                survived, pytest_output = tests_pass(config=config, callback=callback)
         except TimeoutError:
-            return BAD_TIMEOUT
+            return BAD_TIMEOUT, ""
 
         time_elapsed = time() - start
         if not survived and time_elapsed > config.test_time_base + (
             config.baseline_time_elapsed * config.test_time_multiplier
         ):
-            return OK_SUSPICIOUS
+            return OK_SUSPICIOUS, pytest_output
 
         if survived:
-            return BAD_SURVIVED
+            return BAD_SURVIVED, ""
         else:
-            return OK_KILLED
+
+            return OK_KILLED, pytest_output
     except SkipException:
-        return SKIPPED
+        return SKIPPED, ""
 
     finally:
         move(context.filename + '.bak', context.filename)
@@ -849,7 +852,7 @@ class Config:
         self._default_test_command = self.test_command
 
 
-def tests_pass(config: Config, callback) -> bool:
+def tests_pass(config: Config, callback) -> tuple[bool, str]:
     """
     :return: :obj:`True` if the tests pass, otherwise :obj:`False`
     """
@@ -862,8 +865,19 @@ def tests_pass(config: Config, callback) -> bool:
     if use_special_case and config.test_command.startswith(hammett_prefix):
         return hammett_tests_pass(config, callback)
 
-    returncode = popen_streaming_output(config.test_command, callback, timeout=config.baseline_time_elapsed * 10)
-    return returncode != 1
+    returncode, pytest_output = popen_streaming_output(config.test_command, callback, timeout=config.baseline_time_elapsed * 10)
+    pytest_output = get_pytest_output(pytest_output)
+    return returncode != 1, pytest_output
+
+
+def get_pytest_output(output_str: str) -> str:
+    try:
+        test_names = re.findall('\nFAILED (.+?) - ', output_str)
+        test_name = " ".join(test_names) 
+    except AttributeError:
+        # str not found in the original
+        test_name = ''
+    return test_name
 
 
 def config_from_file(**defaults):
@@ -1001,7 +1015,7 @@ def get_mutations_by_file_from_cache(mutation_pk):
 
 def popen_streaming_output(
     cmd: str, callback: Callable[[str], None], timeout: Optional[float] = None
-) -> int:
+) -> tuple[int, str]:
     """Open a subprocess and stream its output without hard-blocking.
 
     :param cmd: the command to execute within the subprocess
@@ -1021,11 +1035,12 @@ def popen_streaming_output(
         )
         stdout = process.stdout
     else:
-        master, slave = os.openpty()
+        master, slave = os.openpty() # file descriptors
         process = subprocess.Popen(
             shlex.split(cmd, posix=True),
-            stdout=slave,
-            stderr=slave
+            stdout=subprocess.PIPE,
+            stderr=slave,
+            text=True
         )
         stdout = os.fdopen(master)
         os.close(slave)
@@ -1065,11 +1080,18 @@ def popen_streaming_output(
         if not timer.is_alive():
             raise TimeoutError("subprocess running command '{}' timed out after {} seconds".format(cmd, timeout))
         process.poll()
+        pytest_return = None
+        try:
+            outs, errs = process.communicate(timeout=15)
+            pytest_return = outs
+        except subprocess.TimeoutExpired:
+            outs, errs = process.communicate()
+            pytest_return = outs
 
     # we have returned from the subprocess cancel the timer if it is running
     timer.cancel()
 
-    return process.returncode
+    return process.returncode, pytest_return
 
 
 def hammett_tests_pass(config: Config, callback) -> bool:
@@ -1133,7 +1155,7 @@ def run_mutation_tests(
     progress: Progress,
     mutations_by_file: Dict[str, List[RelativeMutationID]],
 ):
-    from mutmut.cache import update_mutant_status
+    from mutmut.cache import update_mutant_status, update_mutant_failed_tests
 
     # Need to explicitly use the spawn method for python < 3.8 on macOS
     mp_ctx = multiprocessing.get_context('spawn')
@@ -1186,6 +1208,9 @@ def run_mutation_tests(
                 print(status, end='', flush=True)
             elif not config.no_progress:
                 progress.print()
+        elif command == 'failed_tests':
+            # print(status)
+            update_mutant_failed_tests(file_to_mutate=filename, mutation_id=mutation_id, failed_tests=status, tests_hash=config.hash_of_tests)
 
         else:
             assert command == 'status'

@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import random
 import sys
 import traceback
 from io import (
@@ -12,6 +13,7 @@ from pathlib import Path
 from shutil import copy
 from time import time
 from typing import List
+from collections import defaultdict
 
 import click
 from glob2 import glob
@@ -79,6 +81,8 @@ DEFAULT_RUNNER = 'python -m pytest -x --assert=plain'
 @click.group(context_settings=dict(help_option_names=['-h', '--help']))
 def climain():
     """
+    ***THIS IS THE FORKED VERSION***
+
     Mutation testing system for Python.
 
     Getting started:
@@ -113,6 +117,7 @@ def version():
 @click.option('--rerun-all', is_flag=True, default=False, help='If you modified the test_command in the pre_mutation hook, '
                                                                'the default test_command (specified by the "runner" option) '
                                                                'will be executed if the mutant survives with your modified test_command.')
+@click.option('--use-subset-size', required=False, type=int, help='run tests on a random subset of mutations of size n')
 @click.option('--tests-dir')
 @click.option('-m', '--test-time-multiplier', default=2.0, type=float)
 @click.option('-b', '--test-time-base', default=0.0, type=float)
@@ -135,7 +140,7 @@ def version():
 def run(argument, paths_to_mutate, disable_mutation_types, enable_mutation_types, runner,
         tests_dir, test_time_multiplier, test_time_base, swallow_output, use_coverage,
         dict_synonyms, pre_mutation, post_mutation, use_patch_file, paths_to_exclude,
-        simple_output, no_progress, ci, rerun_all):
+        simple_output, no_progress, ci, rerun_all, use_subset_size):
     """
     Runs mutmut. You probably want to start with just trying this. If you supply a mutation ID mutmut will check just this mutant.
 
@@ -170,7 +175,7 @@ def run(argument, paths_to_mutate, disable_mutation_types, enable_mutation_types
     sys.exit(do_run(argument, paths_to_mutate, disable_mutation_types, enable_mutation_types, runner,
                     tests_dir, test_time_multiplier, test_time_base, swallow_output, use_coverage,
                     dict_synonyms, pre_mutation, post_mutation, use_patch_file, paths_to_exclude,
-                    simple_output, no_progress, ci, rerun_all))
+                    simple_output, no_progress, ci, rerun_all, use_subset_size))
 
 
 @climain.command(context_settings=dict(help_option_names=['-h', '--help']))
@@ -287,6 +292,7 @@ def do_run(
     no_progress,
     ci,
     rerun_all,
+    use_subset_size
 ) -> int:
     """return exit code, after performing an mutation test run.
 
@@ -447,6 +453,14 @@ Legend for output:
 
     parse_run_argument(argument, config, dict_synonyms, mutations_by_file, paths_to_exclude, paths_to_mutate, tests_dirs)
 
+    if use_subset_size != 0:
+        new_mutations_by_file = defaultdict(list)
+        total_mutations = [(file, mut) for file, muts in mutations_by_file.items() for mut in muts]
+        sampled_mutations = random.sample(total_mutations, use_subset_size)
+        for file, mut in sampled_mutations:
+            new_mutations_by_file[file].append(mut)
+        mutations_by_file = dict(new_mutations_by_file)
+    
     config.total = sum(len(mutations) for mutations in mutations_by_file.values())
 
     print()
@@ -524,7 +538,7 @@ def time_test_suite(
             print_status('Running...')
         output.append(line)
 
-    returncode = popen_streaming_output(test_command, feedback)
+    returncode, pytest_output = popen_streaming_output(test_command, feedback)
 
     if returncode == 0 or (using_testmon and returncode == 5):
         baseline_time_elapsed = time() - start_time
