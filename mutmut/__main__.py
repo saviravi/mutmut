@@ -453,7 +453,7 @@ Legend for output:
 
     parse_run_argument(argument, config, dict_synonyms, mutations_by_file, paths_to_exclude, paths_to_mutate, tests_dirs)
 
-    if use_subset_size != 0:
+    if use_subset_size is not None:
         new_mutations_by_file = defaultdict(list)
         total_mutations = [(file, mut) for file, muts in mutations_by_file.items() for mut in muts]
         sampled_mutations = random.sample(total_mutations, use_subset_size)
@@ -542,6 +542,9 @@ def time_test_suite(
 
     if returncode == 0 or (using_testmon and returncode == 5):
         baseline_time_elapsed = time() - start_time
+    elif pytest_output != "":
+        print(pytest_output)
+        raise RuntimeError("Some baseline tests failed: ", pytest_output)
     else:
         raise RuntimeError("Tests don't run cleanly without mutations. Test command was: {}\n\nOutput:\n\n{}".format(test_command, '\n'.join(output)))
 

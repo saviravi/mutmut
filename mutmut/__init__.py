@@ -810,7 +810,7 @@ def run_mutation(context: Context, callback) -> tuple[str, str]:
         if survived:
             return BAD_SURVIVED, ""
         else:
-
+            print(pytest_output)
             return OK_KILLED, pytest_output
     except SkipException:
         return SKIPPED, ""
@@ -866,13 +866,12 @@ def tests_pass(config: Config, callback) -> tuple[bool, str]:
         return hammett_tests_pass(config, callback)
 
     returncode, pytest_output = popen_streaming_output(config.test_command, callback, timeout=config.baseline_time_elapsed * 10)
-    pytest_output = get_pytest_output(pytest_output)
     return returncode != 1, pytest_output
 
 
 def get_pytest_output(output_str: str) -> str:
     try:
-        test_names = re.findall('\nFAILED (.+?) - ', output_str)
+        test_names = [n[0] for n in re.findall('FAILED (.+?)( |\n=)', output_str)]
         test_name = " ".join(test_names) 
     except AttributeError:
         # str not found in the original
@@ -1080,14 +1079,19 @@ def popen_streaming_output(
         if not timer.is_alive():
             raise TimeoutError("subprocess running command '{}' timed out after {} seconds".format(cmd, timeout))
         process.poll()
-        pytest_return = None
+        # pytest_return = None
         try:
             outs, errs = process.communicate(timeout=15)
             pytest_return = outs
+            tests = get_pytest_output(outs)
+            if tests != '':
+                pytest_return = tests
         except subprocess.TimeoutExpired:
             outs, errs = process.communicate()
             pytest_return = outs
-
+            tests = get_pytest_output(outs)
+            if tests != '':
+                pytest_return = tests
     # we have returned from the subprocess cancel the timer if it is running
     timer.cancel()
 
@@ -1209,7 +1213,7 @@ def run_mutation_tests(
             elif not config.no_progress:
                 progress.print()
         elif command == 'failed_tests':
-            # print(status)
+            print("failed tests: ", status)
             update_mutant_failed_tests(file_to_mutate=filename, mutation_id=mutation_id, failed_tests=status, tests_hash=config.hash_of_tests)
 
         else:
