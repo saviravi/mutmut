@@ -43,6 +43,7 @@ from mutmut import (
 from mutmut.cache import (
     create_html_report,
     cached_hash_of_tests,
+    save_failed_tests_to_csv,
 )
 from mutmut.cache import print_result_cache, print_result_ids_cache, \
     hash_of_tests, \
@@ -184,6 +185,15 @@ def results():
     Print the results.
     """
     print_result_cache()
+    sys.exit(0)
+
+@climain.command(context_settings=dict(help_option_names=['-h', '--help']))
+@click.argument('filename', nargs=1, required=True)
+def save_failed_tests(filename):
+    """
+    Save failed tests to a csv
+    """
+    save_failed_tests_to_csv(filename)
     sys.exit(0)
 
 

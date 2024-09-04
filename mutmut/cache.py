@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import csv
 import hashlib
 import os
 from collections import defaultdict
@@ -198,6 +199,22 @@ def print_result_cache(show_diffs=False, dict_synonyms=None, only_this_file=None
     print_stuff('Untested/skipped', (x for x in Mutant.select() if x.status == UNTESTED or x.status == SKIPPED))
     print_failed_tests((x for x in Mutant.select() if x.status == OK_KILLED or x.status == OK_SUSPICIOUS))
 
+@init_db
+@db_session
+def save_failed_tests_to_csv(fname: str):
+    def get_failed_tests(mutant_query):
+        all_failed_tests = []
+        mutant_list = sorted(mutant_query, key=lambda x: x.line.sourcefile.filename)
+        for filename, mutants in groupby(mutant_list, key=lambda x: x.line.sourcefile.filename):
+            mutants = list(mutants)
+            for x in mutants:
+                all_failed_tests += [tuple(test.split('::')) for test in x.failed_tests.split(" ")]
+        return set(all_failed_tests)
+    with open(fname, "w") as f:
+        tests = get_failed_tests((x for x in Mutant.select() if x.status == OK_KILLED or x.status == OK_SUSPICIOUS))
+        writer = csv.writer(f, delimiter=',', quoting=csv.QUOTE_MINIMAL)
+        writer.writerows(tests)
+    print('wrote failed tests to ', fname)
 
 @init_db
 @db_session
