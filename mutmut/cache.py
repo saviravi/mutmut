@@ -73,8 +73,10 @@ def init_db(f):
                         if v is None:
                             existing_db_version = 1
                         else:
+                            print("db version: ", int(v.value))
                             existing_db_version = int(v.value)
-                    except (RowNotFound, ERDiagramError, OperationalError):
+                    except (RowNotFound, ERDiagramError, OperationalError) as e:
+                        print("error: ", e)
                         existing_db_version = 1
 
                 if existing_db_version != current_db_version:
@@ -197,7 +199,9 @@ def print_result_cache(show_diffs=False, dict_synonyms=None, only_this_file=None
     print_stuff('Suspicious 🤔', (x for x in Mutant.select() if x.status == OK_SUSPICIOUS))
     print_stuff('Survived 🙁', (x for x in Mutant.select() if x.status == BAD_SURVIVED))
     print_stuff('Untested/skipped', (x for x in Mutant.select() if x.status == UNTESTED or x.status == SKIPPED))
-    print_failed_tests((x for x in Mutant.select() if x.status == OK_KILLED or x.status == OK_SUSPICIOUS))
+    # print_failed_tests((x for x in Mutant.select() if x.status == OK_KILLED or x.status == OK_SUSPICIOUS))
+    # print_failed_tests((x for x in Mutant.select() if x.status == OK_SURVIVED))
+    print_failed_tests((x for x in Mutant.select() if x.status == BAD_SURVIVED or x.status == BAD_TIMEOUT or x.status == OK_SUSPICIOUS or x.status == OK_KILLED))
 
 @init_db
 @db_session
@@ -215,6 +219,18 @@ def save_failed_tests_to_csv(fname: str):
         writer = csv.writer(f, delimiter=',', quoting=csv.QUOTE_MINIMAL)
         writer.writerows(tests)
     print('wrote failed tests to ', fname)
+
+@init_db
+@db_session
+def show_pytest_output():
+    # for x in Mutant.select():
+    all_failed_tests = []
+    mutant_list = sorted((x for x in Mutant.select()), key=lambda x: x.line.sourcefile.filename)
+    for filename, mutants in groupby(mutant_list, key=lambda x: x.line.sourcefile.filename):
+        mutants = list(mutants)
+        for y in mutants:
+            all_failed_tests += y.failed_tests
+    print(all_failed_tests)
 
 @init_db
 @db_session

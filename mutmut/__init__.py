@@ -489,6 +489,8 @@ def should_exclude(context, config: Optional[Config]):
     return False
 
 
+PYVERSION = "3.11"
+
 class Context:
     def __init__(
         self,
@@ -750,7 +752,7 @@ def check_mutants(mutants_queue, results_queue, cycle_process_after):
             status, pytest_output = run_mutation(context, feedback)
             results_queue.put(('failed_tests', pytest_output, context.filename, context.mutation_id))
 
-            results_queue.put(('status', status, context.filename, context.mutation_id))
+            results_queue.put(('status', status + pytest_output, context.filename, context.mutation_id))
             count += 1
             if count == cycle_process_after:
                 results_queue.put(('cycle', None, None, None))
@@ -805,13 +807,13 @@ def run_mutation(context: Context, callback) -> tuple[str, str]:
         if not survived and time_elapsed > config.test_time_base + (
             config.baseline_time_elapsed * config.test_time_multiplier
         ):
-            return OK_SUSPICIOUS, pytest_output
+            return OK_SUSPICIOUS, "K--" + pytest_output
 
         if survived:
-            return BAD_SURVIVED, ""
+            return BAD_SURVIVED, "S--" + pytest_output
         else:
             print(pytest_output)
-            return OK_KILLED, pytest_output
+            return OK_KILLED, "K--" + pytest_output
     except SkipException:
         return SKIPPED, ""
 
@@ -871,11 +873,37 @@ def tests_pass(config: Config, callback) -> tuple[bool, str]:
 
 def get_pytest_output(output_str: str) -> str:
     try:
-        test_names = [n[0] for n in re.findall('FAILED (.+?)( |\n=)', output_str)]
-        test_name = " ".join(test_names) 
+        # print(output_str[-1000:-100])
+        # # for n in re.findall('FAILED (.+?)( |\n= | \n! )', output_str):
+        # for n in re.findall('FAILED (.+?::.+?\[[^\]]+\])', output_str):
+        #     print(n)
+        # test_names = [n[0] for n in re.findall('FAILED (.+?)( |\n= | \n! |( - ))', output_str)]
+        # test_names = ["".join(n) for n in re.findall('FAILED (.+?::\w+(?:_\w+)*)', output_str)]
+
+        # test_names = ["".join(n) for n in re.findall('FAILED (.+?::\w+(?:::\w+)*)*', output_str)]
+        
+        # test_names = ["-".join(n) for n in re.findall('\|\|\|\|\|\|\|\|\n(.+?::\w+(?:::\w+)*)*\nbbbtotalex:([0-9]+)\nbbbfirstbug:([0-9]+)\nbbboverallruntime:([0-9]+\.[0-9]*)\n\|\|\|\|\|\|\|\|', output_str)]  
+        # matches = re.findall('\|\|\|\|\|\|\|\|\n(.+?::\w+(?:::\w+)*)*\nbbbtotalex:([0-9]+)\nbbbfirstbug:([0-9]+)\nbbboverallruntime:([0-9]+\.[0-9]*)\n\|\|\|\|\|\|\|\|', output_str)
+        
+        # matches = re.findall('\|\|\|\|\|\|\|\|\n(.+?::\w+(?:::\w+)*)*\nbbbtotalex:([0-9]+)\nbbbtotalvalid:([0-9]+)\nbbbfirstbug:([0-9]+|None)\nbbboverallruntime:([0-9]+\.[0-9]*)\n\|\|\|\|\|\|\|\|', output_str)
+        # fixes not capturing tests with [] params at end
+        # matches = re.findall('\|\|\|\|\|\|\|\|\n(.+?::\w+(?:::\w+)*\[?((\w|\-|[0-9])*)\]?)*\nbbbtotalex:([0-9]+)\nbbbtotalvalid:([0-9]+)\nbbbfirstbug:([0-9]+|None)\nbbboverallruntime:([0-9]+\.[0-9]*)\n(?:.|\n)*\|\|\|\|\|\|\|\|', output_str)
+        matches = re.findall(r'\|\|\|\|\|\|\|\|\n([^\|]+?)\nbbbtotalex:([0-9]+)\nbbbtotalvalid:([0-9]+)\nbbbfirstbug:(None|[0-9]+)\nbbboverallruntime:([0-9]+\.[0-9]+)(?=\n(?:\s*-|\|\|\|\|\|\|\|\|))', output_str)
+        matches = ["-".join(n) for n in matches]
+        if len(matches) == 0:
+            test_name = output_str
+        # if len(matches) == 5:
+        #     test_name = "no matches"
+        # elif len(matches) > 4:
+        #     test_name = "ahhhh"
+        # else:
+            # test_name = " ".join(matches)
+        else:
+            test_name = " ".join(matches)
+        #test_name = output_str
     except AttributeError:
         # str not found in the original
-        test_name = ''
+        test_name = output_str
     return test_name
 
 
@@ -986,14 +1014,18 @@ class Progress:
     def register(self, status):
         if status == BAD_SURVIVED:
             self.surviving_mutants += 1
-        elif status == BAD_TIMEOUT:
+        elif status.startswith(BAD_TIMEOUT):
             self.surviving_mutants_timeout += 1
         elif status == OK_KILLED:
             self.killed_mutants += 1
-        elif status == OK_SUSPICIOUS:
+        elif status.startswith(OK_SUSPICIOUS):
             self.suspicious_mutants += 1
-        elif status == SKIPPED:
+        elif status.startswith(SKIPPED):
             self.skipped += 1
+        elif status.startswith("bad_survived"):
+            self.surviving_mutants += 1
+        elif status.startswith("ok_killed"):
+            self.killed_mutants += 1
         else:
             raise ValueError('Unknown status returned from run_mutation: {}'.format(status))
         self.progress += 1
@@ -1068,6 +1100,7 @@ def popen_streaming_output(
             else:
                 while True:
                     line = stdout.readline()
+                    print(line)
                     if not line:
                         break
                     callback(line)
@@ -1218,10 +1251,16 @@ def run_mutation_tests(
 
         else:
             assert command == 'status'
-
+            # print("status: ", status)
+            def stop_at_uppercase(string):
+                for i, char in enumerate(string):
+                    if char.isupper():
+                        return string[:i]
+                return string
             progress.register(status)
+            update_mutant_status(file_to_mutate=filename, mutation_id=mutation_id, status=stop_at_uppercase(status), tests_hash=config.hash_of_tests)
+            update_mutant_failed_tests(file_to_mutate=filename, mutation_id=mutation_id, failed_tests=status, tests_hash=config.hash_of_tests)
 
-            update_mutant_status(file_to_mutate=filename, mutation_id=mutation_id, status=status, tests_hash=config.hash_of_tests)
 
 
 def read_coverage_data() -> Dict[str, Dict[int, List[str]]]:

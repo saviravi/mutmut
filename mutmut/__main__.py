@@ -14,6 +14,11 @@ from shutil import copy
 from time import time
 from typing import List
 from collections import defaultdict
+import cProfile
+import pstats
+import io
+import atexit
+
 
 import click
 from glob2 import glob
@@ -44,6 +49,7 @@ from mutmut.cache import (
     create_html_report,
     cached_hash_of_tests,
     save_failed_tests_to_csv,
+    show_pytest_output,
 )
 from mutmut.cache import print_result_cache, print_result_ids_cache, \
     hash_of_tests, \
@@ -126,6 +132,7 @@ def version():
 @click.option('--dict-synonyms')
 @click.option('--pre-mutation')
 @click.option('--post-mutation')
+@click.option('--use-same-cache', is_flag=True)
 @click.option('--simple-output', is_flag=True, default=False, help="Swap emojis in mutmut output to plain text alternatives.")
 @click.option('--no-progress', is_flag=True, default=False, help="Disable real-time progress indicator")
 @click.option('--CI', is_flag=True, default=False, help="Returns an exit code of 0 for all successful runs and an exit code of 1 for fatal errors.")
@@ -141,7 +148,7 @@ def version():
 def run(argument, paths_to_mutate, disable_mutation_types, enable_mutation_types, runner,
         tests_dir, test_time_multiplier, test_time_base, swallow_output, use_coverage,
         dict_synonyms, pre_mutation, post_mutation, use_patch_file, paths_to_exclude,
-        simple_output, no_progress, ci, rerun_all, use_subset_size):
+        simple_output, no_progress, ci, rerun_all, use_subset_size, use_same_cache):
     """
     Runs mutmut. You probably want to start with just trying this. If you supply a mutation ID mutmut will check just this mutant.
 
@@ -173,10 +180,23 @@ def run(argument, paths_to_mutate, disable_mutation_types, enable_mutation_types
     if test_time_multiplier is None:  # click sets the default=0.0 to None
         test_time_multiplier = 0.0
 
+    # print("Profiling...")
+    # pr = cProfile.Profile()
+    # pr.enable()
+
+    # def exit():
+    #     pr.disable()
+    #     print("Profiling completed")
+    #     s = io.StringIO()
+    #     pstats.Stats(pr, stream=s).sort_stats("cumulative").print_stats()
+    #     print(s.getvalue())
+
+    # atexit.register(exit)
+
     sys.exit(do_run(argument, paths_to_mutate, disable_mutation_types, enable_mutation_types, runner,
                     tests_dir, test_time_multiplier, test_time_base, swallow_output, use_coverage,
                     dict_synonyms, pre_mutation, post_mutation, use_patch_file, paths_to_exclude,
-                    simple_output, no_progress, ci, rerun_all, use_subset_size))
+                    simple_output, no_progress, ci, rerun_all, use_subset_size, use_same_cache))
 
 
 @climain.command(context_settings=dict(help_option_names=['-h', '--help']))
@@ -193,7 +213,8 @@ def save_failed_tests(filename):
     """
     Save failed tests to a csv
     """
-    save_failed_tests_to_csv(filename)
+    # save_failed_tests_to_csv(filename)
+    show_pytest_output()
     sys.exit(0)
 
 
@@ -302,12 +323,14 @@ def do_run(
     no_progress,
     ci,
     rerun_all,
-    use_subset_size
+    use_subset_size,
+    use_same_cache
 ) -> int:
     """return exit code, after performing an mutation test run.
 
     :return: the exit code from executing the mutation tests for run command
     """
+
     if use_coverage and use_patch_file:
         raise click.BadArgumentUsage("You can't combine --use-coverage and --use-patch")
 
@@ -414,6 +437,7 @@ Legend for output:
         test_command=runner,
         using_testmon=using_testmon,
         current_hash_of_tests=current_hash_of_tests,
+        use_same_cache=use_same_cache,
         no_progress=no_progress,
     )    
 
@@ -466,12 +490,15 @@ Legend for output:
     if use_subset_size is not None:
         new_mutations_by_file = defaultdict(list)
         total_mutations = [(file, mut) for file, muts in mutations_by_file.items() for mut in muts]
+        print("overall number of mutations: ", len(total_mutations))
         sampled_mutations = random.sample(total_mutations, use_subset_size)
         for file, mut in sampled_mutations:
             new_mutations_by_file[file].append(mut)
         mutations_by_file = dict(new_mutations_by_file)
     
     config.total = sum(len(mutations) for mutations in mutations_by_file.values())
+
+    print("baseline testing time: ", baseline_time_elapsed)
 
     print()
     print('2. Checking mutants')
@@ -519,6 +546,7 @@ def time_test_suite(
     test_command: str,
     using_testmon: bool,
     current_hash_of_tests,
+    use_same_cache: bool,
     no_progress,
 ) -> float:
     """Execute a test suite specified by ``test_command`` and record
@@ -532,7 +560,7 @@ def time_test_suite(
     :return: execution time of the test suite
     """
     cached_time = cached_test_time()
-    if cached_time is not None and current_hash_of_tests == cached_hash_of_tests():
+    if cached_time is not None and (current_hash_of_tests == cached_hash_of_tests() or use_same_cache):
         print('1. Using cached time for baseline tests, to run baseline again delete the cache file')
         return cached_time
 
